@@ -1,0 +1,126 @@
+nexus:
+  stage: upload
+  tags:
+    - shell
+    - linux
+    - local
+  needs:
+    - secrets-scan
+    - sast
+    - iac-scan
+    - dast
+    - docker-build
+  id_tokens:
+    ID_TOKEN:
+      aud: http://192.168.0.201:9090
+  extends: .retrieve_vault_secrets
+  script:
+    - |
+      echo "Анализ отчетов безопасности..."
+      VULN_FOUND=false
+
+      check_gitleaks() {
+        local file="gitleaks-report.json"
+        if [ -f "$file" ]; then
+          if jq -e '.findings | length > 0' "$file" >/dev/null 2>&1; then
+            local count=$(jq '.findings | length' "$file")
+            echo "Gitleaks: найдено $count секретов"
+            return 0
+          else
+            echo "Gitleaks: секретов не найдено"
+            return 1
+          fi
+        else
+          echo "Gitleaks: файл $file не найден"
+          return 1
+        fi
+      }
+
+      check_opengrep() {
+        local file="opengrep-report.json"
+        if [ -f "$file" ]; then
+          local count=$(jq '[.results[] | select(.extra.severity == "ERROR" or .extra.severity == "WARNING")] | length' "$file" 2>/dev/null)
+          if [ "$count" -gt 0 ]; then
+            echo "Opengrep: найдено $count уязвимостей (ERROR/WARNING)"
+            return 0
+          else
+            echo "Opengrep: уязвимостей не найдено"
+            return 1
+          fi
+        else
+          echo "Opengrep: файл $file не найден"
+          return 1
+        fi
+      }
+
+      check_checkov() {
+        local file="checkov-report.json"
+        if [ -f "$file" ]; then
+          local count=$(jq '[.results.failed_checks[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' "$file" 2>/dev/null)
+          if [ "$count" -gt 0 ]; then
+            echo "Checkov: найдено $count критичных ошибок в IaC"
+            return 0
+          else
+            echo "Checkov: критичных ошибок не найдено"
+            return 1
+          fi
+        else
+          echo "Checkov: файл $file не найден"
+          return 1
+        fi
+      }
+
+      check_nuclei() {
+        local file="nuclei-report.json"
+        if [ -f "$file" ]; then
+          local count=$(jq '[.results[] | select(.severity == "high" or .severity == "critical")] | length' "$file" 2>/dev/null)
+          if [ "$count" -gt 0 ]; then
+            echo "Nuclei: найдено $count высококритичных уязвимостей при DAST"
+            return 0
+          else
+            echo "Nuclei: высококритичных уязвимостей не найдено"
+            return 1
+          fi
+        else
+          echo "Nuclei: файл $file не найден"
+          return 1
+        fi
+      }
+
+      check_gitleaks && VULN_FOUND=true
+      check_opengrep && VULN_FOUND=true
+      check_checkov && VULN_FOUND=true
+      check_nuclei && VULN_FOUND=true
+
+      echo "Формирование тегов и отправка Docker-образа в Nexus Registry"
+      IMAGE_TAG=$(head -1 image_tag.txt)
+      DOCKER_REPO=${NEXUS_DOCKER_REPO:-docker}
+      DATE_TAG=$(date +%d%m%Y)
+      TIME_TAG=$(date +%H%M)
+      FULL_TAG="${CI_PROJECT_NAME}-${DATE_TAG}-${TIME_TAG}-${CI_COMMIT_SHORT_SHA}"
+      FULL_TAG_BUGS="${CI_PROJECT_NAME}-${DATE_TAG}-${TIME_TAG}-${CI_COMMIT_SHORT_SHA}-BUGS"
+
+      echo "$NEXUS_PASSWORD" | docker login -u "$NEXUS_USERNAME" --password-stdin "$NEXUS_REGISTRY"
+
+      if [ "$VULN_FOUND" = true ]; then
+        echo "Найдены уязвимости публикуем только тег :bugs"
+        docker tag "$IMAGE_TAG" "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:$FULL_TAG_BUGS"
+        docker push "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:$FULL_TAG_BUGS"
+      else
+        echo "Уязвимости не найдены публикуем обычные теги"
+        docker tag "$IMAGE_TAG" "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:$FULL_TAG"
+        docker tag "$IMAGE_TAG" "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA}"
+        docker tag "$IMAGE_TAG" "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:latest"
+
+        docker push "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:$FULL_TAG"
+        docker push "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA}"
+        docker push "$NEXUS_REGISTRY/$DOCKER_REPO/${CI_PROJECT_NAME}:latest"
+      fi
+
+      docker logout "$NEXUS_REGISTRY"
+      echo "Образ успешно загружен в Nexus"
+
+  artifacts:
+    when: always
+    paths:
+      - image_tag.txt
