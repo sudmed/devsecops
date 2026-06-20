@@ -1,0 +1,18 @@
+sbom-docker:
+  stage: sbom
+  tags:
+    - shell
+    - linux
+    - local
+  needs: ["docker-build"]
+  script:
+    - echo "Генерация SBOM из Docker-образа"
+    - IMAGE_NAME=$(head -1 image_tag.txt)   
+    - echo "Сканируем образ $IMAGE_NAME"
+    - trivy image --format cyclonedx --output sbom-image.json "$IMAGE_NAME"
+    - echo "SBOM из образа сохранен в sbom-image.json"
+  artifacts:
+    paths:
+      - sbom-image.json
+    expire_in: 1 week
+    when: always
