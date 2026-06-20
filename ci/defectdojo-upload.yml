@@ -1,0 +1,96 @@
+defectdojo:
+  stage: upload
+  tags:
+    - shell
+    - linux
+    - local
+  needs:
+    - secrets-scan
+    - sast
+    - iac-scan
+    - dast
+  id_tokens:
+    ID_TOKEN:
+      aud: http://192.168.0.201:9090
+  extends: .retrieve_vault_secrets
+  script:
+    - echo "Отправка отчетов в DefectDojo"
+    - |
+      # Проверяем, что переменная DOJO_PRODUCT_ID задана
+      if [ -z "$DOJO_PRODUCT_ID" ]; then
+        echo "Ошибка: переменная DOJO_PRODUCT_ID не установлена в GitLab CI/CD"
+        exit 1
+      fi
+      PRODUCT_ID="$DOJO_PRODUCT_ID"
+      echo "Используем продукт с ID $PRODUCT_ID"
+
+      ENGAGEMENT_NAME="CI Scan - ${CI_COMMIT_REF_NAME} - ${CI_COMMIT_SHORT_SHA}"
+      ENGAGEMENT_DESCRIPTION="Автоматическое сканирование в GitLab CI\n Ветка: ${CI_COMMIT_REF_NAME}\n Коммит: ${CI_COMMIT_SHA}\nURL: ${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}"
+      TARGET_START=$(date +%Y-%m-%d)
+      TARGET_END=$(date -d "+30 days" +%Y-%m-%d 2>/dev/null || date -v+30d +%Y-%m-%d)
+
+      ENGAGEMENT_PAYLOAD="{\"name\":\"$ENGAGEMENT_NAME\",\"description\":\"$ENGAGEMENT_DESCRIPTION\",\"product\":$PRODUCT_ID,\"target_start\":\"$TARGET_START\",\"target_end\":\"$TARGET_END\",\"status\":\"In Progress\"}"
+
+      ENG_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${DOJO_URL}/api/v2/engagements/" \
+        -H "Authorization: Token $DOJO_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$ENGAGEMENT_PAYLOAD")
+      ENG_HTTP_CODE=$(echo "$ENG_RESPONSE" | tail -n1)
+      ENG_BODY=$(echo "$ENG_RESPONSE" | head -n -1)
+
+      if [ "$ENG_HTTP_CODE" -eq 201 ]; then
+        ENGAGEMENT_ID=$(echo "$ENG_BODY" | jq -r '.id')
+        echo "Engagement создан с ID: $ENGAGEMENT_ID"
+      else
+        echo "Ошибка создания engagement: HTTP $ENG_HTTP_CODE"
+        echo "Ответ: $ENG_BODY"
+        exit 1
+      fi
+    - |
+      import_scan() {
+        scan_type="$1"
+        file="$2"
+        if [ ! -f "$file" ]; then
+          echo "Файл $file отсутствует, пропускаем $scan_type"
+          return 0
+        fi
+        echo "Импортируем $scan_type из $file в engagement $ENGAGEMENT_ID"
+        IMPORT_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${DOJO_URL}/api/v2/import-scan/" \
+          -H "Authorization: Token $DOJO_API_TOKEN" \
+          -F "engagement=$ENGAGEMENT_ID" \
+          -F "scan_type=$scan_type" \
+          -F "file=@$file" \
+          -F "close_old_findings=true" \
+          -F "close_old_findings_product_scope=true")
+        IMPORT_HTTP_CODE=$(echo "$IMPORT_RESPONSE" | tail -n1)
+        IMPORT_BODY=$(echo "$IMPORT_RESPONSE" | head -n -1)
+        if [ "$IMPORT_HTTP_CODE" -eq 200 ] || [ "$IMPORT_HTTP_CODE" -eq 201 ]; then
+          echo "$scan_type успешно импортирован"
+        else
+          echo "Ошибка импорта $scan_type: HTTP $IMPORT_HTTP_CODE"
+          echo "Ответ: $IMPORT_BODY"
+          exit 1
+        fi
+      }
+    - import_scan "Gitleaks Scan" "gitleaks-report.json"
+    - import_scan "Semgrep JSON Report" "opengrep-report.json"
+    - import_scan "Checkov Scan" "checkov-report.json"
+    - import_scan "Nuclei Scan" "nuclei-report.json"
+    - |
+      echo "Закрываем engagement $ENGAGEMENT_ID"
+      CLOSE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${DOJO_URL}/api/v2/engagements/${ENGAGEMENT_ID}/close/" \
+        -H "Authorization: Token $DOJO_API_TOKEN" -d "")
+      CLOSE_HTTP_CODE=$(echo "$CLOSE_RESPONSE" | tail -n1)
+      if [ "$CLOSE_HTTP_CODE" -eq 200 ]; then
+        echo "Engagement закрыт"
+      else
+        echo "Не удалось закрыть engagement (HTTP $CLOSE_HTTP_CODE), но это не критично"
+      fi
+    - echo "Все операции с DefectDojo завершены"
+  artifacts:
+    when: always
+    paths:
+      - gitleaks-report.json
+      - opengrep-report.json
+      - checkov-report.json
+      - nuclei-report.json
