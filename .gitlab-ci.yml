@@ -1,0 +1,89 @@
+include:
+  # Всегда нужен vault-setup (скрытая джоба)
+  - project: 'root1/devsecops'
+    ref: main  # или конкретный тег
+    file: '/ci/vault-setup.yml'
+
+  # sbom
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/sbom.yml'
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/sbom-docker.yml'
+
+  # Code scan
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/secrets-scan.yml'
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/sast.yml'
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/iac-scan.yml'
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/dast.yml' 
+
+  # Upload (требуют секреты Vault)
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/defectdojo-upload.yml'
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/dependency-track-upload.yml'
+  - project: 'root1/devsecops'
+    ref: main
+    file: '/ci/nexus-upload.yml'
+
+stages:
+  - build
+  - sbom
+  - code-scan
+  - upload
+
+variables:
+  GIT_STRATEGY: clone
+
+build:
+  stage: build
+  tags:
+    - docker
+    - linux
+    - devsecops
+  image: node:18-alpine
+  script:
+    - export CI=false
+    - echo "Сборка React приложения"
+    - npm install --cache .npm --prefer-offline
+    - npm run build
+    - echo "Сборка завершена, артефакты в build/"
+  cache:
+    key: npm
+    paths:
+      - .npm/
+  artifacts:
+    paths:
+      - build/
+    expire_in: 1 hour
+    when: always
+
+docker-build:
+  stage: build
+  tags:
+    - shell
+    - linux
+    - local 
+  needs: ["build"] 
+  script:
+    - echo "Сборка Docker-образа"
+    - docker build -t react-app:${CI_COMMIT_SHORT_SHA} .
+    - docker tag react-app:${CI_COMMIT_SHORT_SHA} 
+    - echo "react-app:${CI_COMMIT_SHORT_SHA}" > image_tag.txt
+    - echo "Docker-образ собран"
+  artifacts:
+    paths:
+      - image_tag.txt
+    expire_in: 1 week
+    when: always
