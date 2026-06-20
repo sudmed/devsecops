@@ -1,0 +1,16 @@
+iac-scan:
+  stage: code-scan
+  tags:
+    - shell
+    - linux
+    - local
+  script:
+    - echo "IaC scan (checkov)"
+    - checkov --version
+    - checkov -d . --soft-fail -o json > checkov-report.json || true
+    - echo "IaC scan завершен, отчет сохранен"
+  artifacts:
+    paths:
+      - checkov-report.json
+    expire_in: 1 week
+    when: always
