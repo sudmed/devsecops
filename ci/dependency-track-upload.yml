@@ -1,0 +1,57 @@
+dependency-track:
+  stage: upload
+  tags:
+    - shell
+    - linux
+    - local
+  needs:
+    - sbom
+    - sbom-docker
+  id_tokens:
+    ID_TOKEN:
+      aud: http://192.168.0.201:9090
+  extends: .retrieve_vault_secrets
+  script:
+    - echo "Отправка SBOM в Dependency-Track..."
+    - DT_API_URL="${DEPENDENCY_TRACK_URL%/}/api/v1/bom"
+    - echo "Endpoint $DT_API_URL"
+
+    - |
+      send_sbom() {
+        local file="$1"
+        local project_uuid="$2"
+        local name="$3"
+        if [ ! -f "$file" ]; then
+          echo "Файл $file отсутствует, пропускаем $name"
+          return 0
+        fi
+        if [ -z "$project_uuid" ]; then
+          echo "PROJECT_UUID для $name не задан, пропускаем"
+          return 0
+        fi
+        echo "Отправляем $name из $file в проект $project_uuid"
+        response=$(curl -s -w "\n%{http_code}" -X POST "$DT_API_URL" \
+          -H "X-Api-Key: $DEPENDENCY_TRACK_API_KEY" \
+          -F "project=$project_uuid" \
+          -F "bom=@$file")
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | head -n -1)
+        echo "HTTP код ответа: $http_code"
+        echo "Тело ответа: $body"
+        if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
+          echo "$name успешно загружен в Dependency-Track!"
+        else
+          echo "Ошибка загрузки $name: HTTP $http_code"
+          exit 1
+        fi
+      }
+
+    - send_sbom "sbom.json" "$DEPENDENCY_TRACK_PROJECT_UUID" "SBOM приложения"
+    - send_sbom "sbom-image.json" "$DEPENDENCY_TRACK_PROJECT_DOCKER_UUID" "SBOM Docker-образа"
+
+    - echo "Все SBOM отправлены"
+  artifacts:
+    when: always
+    paths:
+      - sbom.json
+      - sbom-image.json
