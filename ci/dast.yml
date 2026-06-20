@@ -1,0 +1,60 @@
+dast:
+  stage: code-scan
+  tags:
+    - shell
+    - linux
+    - local
+  needs: ["docker-build"]
+  script:
+    - echo "DAST запуск Nuclei на собранном приложении"
+    - IMAGE_NAME=$(head -1 image_tag.txt)
+    - CONTAINER_NAME="app-${CI_PROJECT_NAME}-${CI_COMMIT_SHORT_SHA}"
+    - echo "Используем образ $IMAGE_NAME, контейнер $CONTAINER_NAME"
+    - docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    - docker run -d --name "$CONTAINER_NAME" -p 3000:80 "$IMAGE_NAME"
+    - sleep 5
+    - echo "Логи контейнера после запуска:"
+    - docker logs "$CONTAINER_NAME" || true
+    - echo "Ожидаем ответ от приложения на порту 3000 (до 30 секунд)..."
+    - |
+      timeout 30 sh -c "until curl -s -f http://localhost:3000; do sleep 2; done" || {
+        echo "Приложение не запустилось в течение 30 секунд"
+        echo "Последние логи контейнера:"
+        docker logs "$CONTAINER_NAME" || true
+        echo "Состояние контейнера:"
+        docker ps -a --filter "name=$CONTAINER_NAME"
+        docker stop "$CONTAINER_NAME" || true
+        docker rm "$CONTAINER_NAME" || true
+        exit 1
+      }
+    - echo "Приложение запущено, начинаем сканирование"
+
+    - |
+      if [ -n "$AUTH_USERNAME" ] && [ -n "$AUTH_PASSWORD" ]; then
+        echo "Авторизация включена (Basic Auth)"
+        AUTH_BASE64=$(echo -n "${AUTH_USERNAME}:${AUTH_PASSWORD}" | base64 -w 0)
+        AUTH_HEADER="-H 'Authorization: Basic $AUTH_BASE64'"
+      else
+        echo "Авторизация отключена"
+        AUTH_HEADER=""
+      fi
+
+    - echo "Версия Nuclei:"
+    - nuclei -version || true
+
+    - eval "nuclei -u http://localhost:3000 $AUTH_HEADER -json -o nuclei-report.json" && exit_status=0 || exit_status=$?
+
+    - |
+      if [ $exit_status -ne 0 ]; then
+        echo "Флаг -json не сработал, пробуем -j"
+        eval "nuclei -u http://localhost:3000 $AUTH_HEADER -j -o nuclei-report.json" || eval "nuclei -u http://localhost:3000 $AUTH_HEADER -o nuclei-report.json"
+      fi
+
+    - echo "DAST завершен, отчет nuclei-report.json"
+    - docker stop "$CONTAINER_NAME" || true
+    - docker rm "$CONTAINER_NAME" || true
+  artifacts:
+    paths:
+      - nuclei-report.json
+    expire_in: 1 week
+    when: always
