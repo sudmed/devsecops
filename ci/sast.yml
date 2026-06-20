@@ -1,0 +1,16 @@
+sast:
+  stage: code-scan
+  tags:
+    - shell
+    - linux
+    - local
+  script:
+    - echo "SAST (opengrep) с правилами из /opt/opengrep-rules"
+    - if [ ! -d /opt/opengrep-rules-clean ]; then echo "Директория правил /opt/opengrep-rules не найдена"; exit 1; fi
+    - opengrep scan --config /opt/opengrep-rules-clean --json -o opengrep-report.json . || true
+    - echo "SAST завершен, отчет сохранен"
+  artifacts:
+    paths:
+      - opengrep-report.json
+    expire_in: 1 week
+    when: always
