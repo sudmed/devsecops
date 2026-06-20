@@ -1,0 +1,16 @@
+sbom:
+ stage: sbom
+ tags:
+   - shell
+   - linux
+   - local
+ needs: ["build"]
+ script:
+   - echo "Генерация SBOM в формате CycloneDX"
+   - trivy fs --format cyclonedx --output sbom.json .
+   - echo "SBOM сохранен в sbom.json"
+ artifacts:
+   paths:
+     - sbom.json
+   expire_in: 1 week
+   when: always
