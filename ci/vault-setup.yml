@@ -1,0 +1,34 @@
+.retrieve_vault_secrets:
+  before_script:
+    - echo "Получение секретов из Vault..."
+    - |
+      if ! command -v jq &> /dev/null; then
+        echo "jq не найден. Установите jq на раннере."
+        exit 1
+      fi
+      login_payload=$(jq -n --arg jwt "$ID_TOKEN" --arg role "$VAULT_AUTH_ROLE" '{jwt: $jwt, role: $role}')
+      login_response=$(curl -s --request POST \
+        --header "Content-Type: application/json" \
+        --data "$login_payload" \
+        "${VAULT_ADDR}/v1/auth/jwt/login")
+      vault_token=$(echo "$login_response" | jq -r '.auth.client_token')
+      if [ "$vault_token" = "null" ] || [ -z "$vault_token" ]; then
+        echo "Ошибка аутентификации в Vault:"
+        echo "$login_response" | jq .
+        exit 1
+      fi
+      read_secret() {
+        local path=$1
+        local field=$2
+        local response=$(curl -s --header "X-Vault-Token: $vault_token" \
+          "${VAULT_ADDR}/v1/secret/data/${path}")
+        echo "$response" | jq -r --arg fld "$field" '.data.data[$fld]'
+      }
+      export DOJO_URL=$(read_secret "defectdojo" "url")
+      export DOJO_API_TOKEN=$(read_secret "defectdojo" "token")
+      export DEPENDENCY_TRACK_URL=$(read_secret "dependency-track" "url")
+      export DEPENDENCY_TRACK_API_KEY=$(read_secret "dependency-track" "api_key")
+      export NEXUS_REGISTRY=$(read_secret "nexus" "registry")
+      export NEXUS_USERNAME=$(read_secret "nexus" "username")
+      export NEXUS_PASSWORD=$(read_secret "nexus" "password")
+    - echo "Все секреты успешно загружены из Vault"
